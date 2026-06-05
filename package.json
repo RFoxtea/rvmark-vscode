@@ -1,0 +1,101 @@
+{
+  "name": "vscode-rvmark",
+  "displayName": "rvmark",
+  "description": "Syntax highlighting for .rvmark files",
+  "version": "0.2.0",
+  "publisher": "raf",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "main": "./extension.js",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "rvmark.continueNumbering",
+        "title": "rvmark: Continue numbering"
+      },
+      {
+        "command": "rvmark.indentItem",
+        "title": "rvmark: Indent item (deeper)"
+      },
+      {
+        "command": "rvmark.outdentItem",
+        "title": "rvmark: Outdent item (shallower)"
+      },
+      {
+        "command": "rvmark.moveNodeUp",
+        "title": "rvmark: Move node up"
+      },
+      {
+        "command": "rvmark.moveNodeDown",
+        "title": "rvmark: Move node down"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "rvmark.continueNumbering",
+        "key": "enter",
+        "when": "editorTextFocus && editorLangId == rvmark && !suggestWidgetVisible && !parameterHintsVisible && !inSnippetMode"
+      },
+      {
+        "command": "type",
+        "args": {
+          "text": "\n"
+        },
+        "key": "shift+enter",
+        "when": "editorTextFocus && editorLangId == rvmark"
+      },
+      {
+        "command": "rvmark.indentItem",
+        "key": "tab",
+        "when": "editorTextFocus && editorLangId == rvmark && !suggestWidgetVisible && !inSnippetMode"
+      },
+      {
+        "command": "rvmark.outdentItem",
+        "key": "shift+tab",
+        "when": "editorTextFocus && editorLangId == rvmark && !suggestWidgetVisible && !inSnippetMode"
+      },
+      {
+        "command": "rvmark.moveNodeUp",
+        "key": "alt+up",
+        "when": "editorTextFocus && editorLangId == rvmark"
+      },
+      {
+        "command": "rvmark.moveNodeDown",
+        "key": "alt+down",
+        "when": "editorTextFocus && editorLangId == rvmark"
+      }
+    ],
+    "languages": [
+      {
+        "id": "rvmark",
+        "aliases": [
+          "rvmark"
+        ],
+        "extensions": [
+          ".rvmark"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "rvmark",
+        "scopeName": "source.rvmark",
+        "path": "./syntaxes/rvmark.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.markdown": "markdown"
+        }
+      }
+    ]
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^2.32.0"
+  }
+}
