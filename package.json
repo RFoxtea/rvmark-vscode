@@ -4,6 +4,7 @@
   "description": "Syntax highlighting for .rvmark files",
   "version": "0.2.0",
   "publisher": "raf",
+  "license": "AGPL-3.0-only",
   "engines": {
     "vscode": "^1.75.0"
   },
