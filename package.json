@@ -94,7 +94,14 @@
           "meta.embedded.block.markdown": "markdown"
         }
       }
-    ]
+    ],
+    "configurationDefaults": {
+      "[rvmark]": {
+        "editor.detectIndentation": false,
+        "editor.insertSpaces": true,
+        "editor.tabSize": 2
+      }
+    }
   },
   "devDependencies": {
     "@vscode/vsce": "^2.32.0"
