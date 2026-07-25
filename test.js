@@ -28,7 +28,7 @@ require.cache['vscode'] = {
   exports: { Range, Diagnostic, DiagnosticSeverity },
 };
 
-const { lintDocument, collectNodes, renumberAfterEdit, nextSiblingOrdinal } = require('./extension.js');
+const { lintDocument, collectNodes, renumberAfterEdit, nextSiblingOrdinal, nextSiblingMarker } = require('./extension.js');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function makeDoc(text, languageId = 'rvmark') {
@@ -472,6 +472,47 @@ test('nextSiblingOrdinal: does not count cousins from different subtrees', () =>
   ].join('\n'));
   // Pressing Enter on line 4 ("    1. Traditionally") — should give 2, not 3.
   assert.equal(nextSiblingOrdinal(doc, 4), 2);
+});
+
+// ── nextSiblingMarker ─────────────────────────────────────────────────────────
+
+test('nextSiblingMarker: unordered dash repeats as-is (default)', () => {
+  const doc = makeDoc([
+    '- parent',
+    '  - child a',
+    '  - child b',
+  ].join('\n'));
+  assert.equal(nextSiblingMarker(doc, 2), '-');
+});
+
+test('nextSiblingMarker: unordered star repeats as-is', () => {
+  const doc = makeDoc([
+    '* parent',
+    '  * child a',
+  ].join('\n'));
+  assert.equal(nextSiblingMarker(doc, 1), '*');
+});
+
+test('nextSiblingMarker: integer ordinal continues numbering', () => {
+  const doc = makeDoc([
+    '1. parent',
+    '  1. child a',
+    '  2. child b',
+  ].join('\n'));
+  assert.equal(nextSiblingMarker(doc, 2), '3.');
+});
+
+test('nextSiblingMarker: non-integer ordinal falls back to dash', () => {
+  const doc = makeDoc([
+    'a. parent',
+    '  b. child a',
+  ].join('\n'));
+  assert.equal(nextSiblingMarker(doc, 1), '-');
+});
+
+test('nextSiblingMarker: non-node line returns null', () => {
+  const doc = makeDoc('just some prose');
+  assert.equal(nextSiblingMarker(doc, 0), null);
 });
 
 test('renumber: no unselected siblings — starts from 1', () => {

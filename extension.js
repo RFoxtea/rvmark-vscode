@@ -295,6 +295,19 @@ function nextSiblingOrdinal(doc, lineNum) {
   return maxNum + 1;
 }
 
+// Returns the marker text (no trailing space) for a new sibling inserted after
+// `lineNum`, matching the current node's style. Unordered is the default: an
+// unordered marker ('-' or '*') repeats as-is, an integer ordinal continues
+// numbering, and any other explicit ordinal (e.g. 'a.', 'iv.') falls back to
+// '-'. Returns null if `lineNum` is not a node line. Exported for testing.
+function nextSiblingMarker(doc, lineNum) {
+  const m = NODE_LINE.exec(doc.lineAt(lineNum).text);
+  if (!m) return null;
+  if (m[3]) return m[3]; // '-' or '*'
+  if (INT_ORDINAL.test(m[2])) return String(nextSiblingOrdinal(doc, lineNum) ?? 1) + '.';
+  return '-';
+}
+
 // ── Renumber helpers ──────────────────────────────────────────────────────────
 
 // After an indent/outdent edit, renumber integer ordinals at the leftmost indent
@@ -479,7 +492,9 @@ function activate(context) {
     vscode.commands.registerTextEditorCommand('rvmark.moveNodeDown', (editor) => moveNode(editor, 'down'))
   );
 
-  // Enter: insert a new sibling node after the current one, with the next integer ordinal.
+  // Enter: insert a new sibling node after the current one. Match the current
+  // node's marker style: an unordered marker ('-' or '*') repeats as-is —
+  // unordered is the default — while an integer ordinal continues numbering.
   context.subscriptions.push(
     vscode.commands.registerTextEditorCommand('rvmark.continueNumbering', (editor) => {
       const doc = editor.document;
@@ -490,8 +505,7 @@ function activate(context) {
       if (!m) { vscode.commands.executeCommand('type', { text: '\n' }); return; }
 
       const indent = m[1];
-      const next = nextSiblingOrdinal(doc, lineNum);
-      const prefix = indent + String(next ?? 1) + '. ';
+      const prefix = indent + nextSiblingMarker(doc, lineNum) + ' ';
 
       if (sel.active.character === 0) {
         editor.edit(eb => eb.insert(new vscode.Position(lineNum, 0), prefix + '\n')).then(() => {
@@ -524,4 +538,4 @@ function activate(context) {
   ));
 }
 
-module.exports = { activate, lintDocument, collectNodes, renumberAfterEdit, nextSiblingOrdinal };
+module.exports = { activate, lintDocument, collectNodes, renumberAfterEdit, nextSiblingOrdinal, nextSiblingMarker };
