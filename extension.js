@@ -130,7 +130,10 @@ function lintDocument(document) {
 
   const anchors = new Set();
   const refs = [];
-  const ANCHOR_DEF_RE = /\{#([a-zA-Z0-9_-]+)/g;
+  // An id declaration is any `;`-separated segment of an attribute block that
+  // starts with '#', so it can follow the opening brace ({#foo}) or another
+  // attribute ({= tr; #foo}) — matching parseAttrBlock in the engine.
+  const ANCHOR_DEF_RE = /[{;]\s*#([a-zA-Z0-9_-]+)/g;
   const REFERENCE_RE  = /\{[^}]*?(?:transclude:\s*|=>\s*)([^;}\s]+)/g;
 
   let lintFenceChar = null;
@@ -187,7 +190,7 @@ function lintDocument(document) {
       } else if (anchor) {
         const fileText = fs.readFileSync(resolvedPath, 'utf8');
         const remoteAnchors = new Set();
-        const re = /\{#([a-zA-Z0-9_-]+)/g;
+        const re = /[{;]\s*#([a-zA-Z0-9_-]+)/g;
         let am;
         for (const line of fileText.split('\n')) {
           if (!NODE_LINE.test(line)) continue;
@@ -308,6 +311,94 @@ function nextSiblingMarker(doc, lineNum) {
   return '-';
 }
 
+// ── Selection expansion ───────────────────────────────────────────────────────
+
+// Classify every line of the document as owned by the node line that precedes it.
+// Returns an array `ownerOf` where ownerOf[i] is the line index of the node line
+// that line i belongs to (or -1 for lines that belong to no node — e.g. leading
+// junk before the first node, or blank lines outside a body).
+//
+// A node line owns:
+//   - its fenced body, if any (opening fence, content, closing fence), plus any
+//     blank lines between the node line and the opening fence;
+//   - the continuation lines that follow it (non-blank, non-node, outside a fence).
+//
+// Blank lines are only claimed when they sit inside a body or between the node
+// line and its opening fence; a trailing blank line after a node ends its run so
+// indenting a node doesn't drag along the whitespace separating it from the next.
+function computeLineOwners(document) {
+  const ownerOf = new Array(document.lineCount).fill(-1);
+  let owner      = -1;   // current node line index
+  let fenceChar  = null;
+  let fenceLen   = 0;
+  let awaitFence = false; // node declared a body; opening fence not seen yet
+  let pendingBlanks = []; // blank lines held back until we know they're inside
+
+  for (let i = 0; i < document.lineCount; i++) {
+    const text = document.lineAt(i).text;
+
+    if (fenceChar !== null) {
+      ownerOf[i] = owner;
+      const closeM = text.match(/^([ \t]*)(`{3,}|~{3,})\s*$/);
+      if (closeM && closeM[2][0] === fenceChar && closeM[2].length >= fenceLen) {
+        fenceChar = null; fenceLen = 0;
+      }
+      continue;
+    }
+
+    if (awaitFence) {
+      if (text.trim() === '') { pendingBlanks.push(i); continue; }
+      const openM = FENCE_OPEN.exec(text);
+      if (openM) {
+        // The blanks we held back sit between the node line and its fence: claim them.
+        for (const b of pendingBlanks) ownerOf[b] = owner;
+        pendingBlanks = [];
+        fenceChar = openM[2][0]; fenceLen = openM[2].length;
+        ownerOf[i] = owner;
+        awaitFence = false;
+        continue;
+      }
+      // No body materialised after all — fall through and treat this like any
+      // other line, leaving the held-back blanks unowned.
+      pendingBlanks = [];
+      awaitFence = false;
+    }
+
+    const m = NODE_LINE.exec(text);
+    if (m) {
+      owner = i;
+      ownerOf[i] = i;
+      // A body-type node with no inline value opens a fenced body next.
+      awaitFence = NODE_MEDIA.test(text) && !NODE_MEDIA_INLINE.test(text);
+      continue;
+    }
+
+    const openM = FENCE_OPEN.exec(text);
+    if (openM) {
+      // A stray fence outside a declared body still shields its contents.
+      fenceChar = openM[2][0]; fenceLen = openM[2].length;
+      ownerOf[i] = owner;
+      continue;
+    }
+
+    if (text.trim() === '') { owner = -1; continue; } // blank line ends the run
+    ownerOf[i] = owner; // continuation line
+  }
+  return ownerOf;
+}
+
+// Given the node lines the user selected, return the full set of lines that must
+// move with them: the node lines themselves plus every line they own.
+// Exported for testing.
+function expandSelectionLines(document, nodeLines) {
+  const ownerOf = computeLineOwners(document);
+  const out = new Set(nodeLines);
+  for (let i = 0; i < ownerOf.length; i++) {
+    if (ownerOf[i] !== -1 && nodeLines.has(ownerOf[i])) out.add(i);
+  }
+  return out;
+}
+
 // ── Renumber helpers ──────────────────────────────────────────────────────────
 
 // After an indent/outdent edit, renumber integer ordinals at the leftmost indent
@@ -404,8 +495,16 @@ function activate(context) {
       }
       if (selectedLines.size === 0) { vscode.commands.executeCommand('tab'); return; }
 
+      // Block bodies and continuation lines move with the node that owns them —
+      // a body's closing fence must keep the same indent as its opening fence.
+      const linesToShift = expandSelectionLines(doc, selectedLines);
+
       editor.edit(eb => {
-        for (const lineNum of selectedLines) eb.insert(new vscode.Position(lineNum, 0), unit);
+        for (const lineNum of linesToShift) {
+          // Don't indent blank lines — that would leave trailing whitespace.
+          if (doc.lineAt(lineNum).text.trim() === '') continue;
+          eb.insert(new vscode.Position(lineNum, 0), unit);
+        }
       }).then(() => renumberAfterEdit(editor, selectedLines));
     })
   );
@@ -425,12 +524,26 @@ function activate(context) {
       }
       if (selectedLines.size === 0) { vscode.commands.executeCommand('outdentLines'); return; }
 
+      // Owned lines (body + continuations) shift with their node line, and by the
+      // *same* amount — a body's closing fence must keep its opening fence's indent,
+      // and body content keeps its relative indentation.
+      const ownerOf = computeLineOwners(doc);
+      const shiftFor = new Map(); // node line -> columns actually removed
+      for (const lineNum of selectedLines) {
+        const currentIndent = doc.lineAt(lineNum).text.match(/^( *)/)[1].length;
+        shiftFor.set(lineNum, Math.min(currentIndent, unit));
+      }
+
       editor.edit(eb => {
-        for (const lineNum of selectedLines) {
-          const text = doc.lineAt(lineNum).text;
-          const currentIndent = text.match(/^( *)/)[1].length;
-          const remove = Math.min(currentIndent, unit);
-          if (remove > 0) eb.delete(new vscode.Range(lineNum, 0, lineNum, remove));
+        for (let i = 0; i < doc.lineCount; i++) {
+          const ownerLine = selectedLines.has(i) ? i : ownerOf[i];
+          if (ownerLine === -1 || !selectedLines.has(ownerLine)) continue;
+          const text = doc.lineAt(i).text;
+          const available = text.match(/^( *)/)[1].length;
+          // Never eat non-whitespace: a body line indented less than its node
+          // (or a blank line) just gives up whatever leading space it has.
+          const remove = Math.min(available, shiftFor.get(ownerLine));
+          if (remove > 0) eb.delete(new vscode.Range(i, 0, i, remove));
         }
       }).then(() => renumberAfterEdit(editor, selectedLines));
     })
@@ -538,4 +651,4 @@ function activate(context) {
   ));
 }
 
-module.exports = { activate, lintDocument, collectNodes, renumberAfterEdit, nextSiblingOrdinal, nextSiblingMarker };
+module.exports = { activate, lintDocument, collectNodes, renumberAfterEdit, nextSiblingOrdinal, nextSiblingMarker, computeLineOwners, expandSelectionLines };
