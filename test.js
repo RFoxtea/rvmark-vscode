@@ -515,6 +515,23 @@ test('nextSiblingMarker: non-node line returns null', () => {
   assert.equal(nextSiblingMarker(doc, 0), null);
 });
 
+test('nextSiblingMarker: block-body prose is not a node line', () => {
+  // "Pause. That I..." matches the word-ordinal form but sits inside a fenced
+  // body, so Enter must not treat it as a sibling to continue.
+  const doc = makeDoc([
+    '- top',
+    '  - {= block}',
+    '    ~~~',
+    '    Pause. That I grabbed for this term is a hint.',
+    '    - a dashed prose line',
+    '    ~~~',
+    '  - after',
+  ].join('\n'));
+  assert.equal(nextSiblingMarker(doc, 3), null);
+  assert.equal(nextSiblingMarker(doc, 4), null);
+  assert.equal(nextSiblingMarker(doc, 6), '-');
+});
+
 test('renumber: no unselected siblings — starts from 1', () => {
   // All siblings are selected, so max unselected = 0, counter starts at 1.
   const input = [

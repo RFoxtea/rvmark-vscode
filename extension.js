@@ -67,6 +67,17 @@ function collectNodes(document) {
   return nodes;
 }
 
+// True if `lineNum` is a real node line, i.e. one collectNodes found. A bare
+// NODE_LINE test is not enough: prose inside a block body ("Pause. That I...")
+// matches the word-ordinal form, and only fence tracking tells the two apart.
+function nodeLineSet(document) {
+  return new Set(collectNodes(document).map(n => n.lineIndex));
+}
+
+function isNodeLine(document, lineNum) {
+  return nodeLineSet(document).has(lineNum);
+}
+
 function detectIndentUnit(document) {
   const nodes = collectNodes(document);
   for (let i = 1; i < nodes.length; i++) {
@@ -268,7 +279,7 @@ function nextSiblingOrdinal(doc, lineNum) {
   const indent = m[1];
   const nodes = collectNodes(doc);
   const curIdx = nodes.findIndex(n => n.lineIndex === lineNum);
-  if (curIdx === -1) return null;
+  if (curIdx === -1) return null; // inside a body: not a node line
   const depth = nodes[curIdx].depth;
 
   // Find parent index (same logic as linter's ancestorIdxStack).
@@ -306,6 +317,7 @@ function nextSiblingOrdinal(doc, lineNum) {
 function nextSiblingMarker(doc, lineNum) {
   const m = NODE_LINE.exec(doc.lineAt(lineNum).text);
   if (!m) return null;
+  if (!isNodeLine(doc, lineNum)) return null;
   if (m[3]) return m[3]; // '-' or '*'
   if (INT_ORDINAL.test(m[2])) return String(nextSiblingOrdinal(doc, lineNum) ?? 1) + '.';
   return '-';
@@ -490,8 +502,9 @@ function activate(context) {
       const startLine = Math.min(sel.start.line, sel.end.line);
       const endLine   = Math.max(sel.start.line, sel.end.line);
       const selectedLines = new Set();
+      const nodeLines = nodeLineSet(doc);
       for (let i = startLine; i <= endLine; i++) {
-        if (NODE_LINE.test(doc.lineAt(i).text)) selectedLines.add(i);
+        if (nodeLines.has(i)) selectedLines.add(i);
       }
       if (selectedLines.size === 0) { vscode.commands.executeCommand('tab'); return; }
 
@@ -519,8 +532,9 @@ function activate(context) {
       const startLine = Math.min(sel.start.line, sel.end.line);
       const endLine   = Math.max(sel.start.line, sel.end.line);
       const selectedLines = new Set();
+      const nodeLines = nodeLineSet(doc);
       for (let i = startLine; i <= endLine; i++) {
-        if (NODE_LINE.test(doc.lineAt(i).text)) selectedLines.add(i);
+        if (nodeLines.has(i)) selectedLines.add(i);
       }
       if (selectedLines.size === 0) { vscode.commands.executeCommand('outdentLines'); return; }
 
@@ -553,7 +567,7 @@ function activate(context) {
   function moveNode(editor, direction) {
     const doc = editor.document;
     const lineNum = editor.selection.active.line;
-    if (!NODE_LINE.test(doc.lineAt(lineNum).text)) {
+    if (!isNodeLine(doc, lineNum)) {
       vscode.commands.executeCommand(
         direction === 'up' ? 'editor.action.moveLinesUpAction' : 'editor.action.moveLinesDownAction'
       );
@@ -615,10 +629,11 @@ function activate(context) {
       const lineNum = sel.active.line;
       const lineText = doc.lineAt(lineNum).text;
       const m = NODE_LINE.exec(lineText);
-      if (!m) { vscode.commands.executeCommand('type', { text: '\n' }); return; }
+      const marker = m && nextSiblingMarker(doc, lineNum);
+      if (!marker) { vscode.commands.executeCommand('type', { text: '\n' }); return; }
 
       const indent = m[1];
-      const prefix = indent + nextSiblingMarker(doc, lineNum) + ' ';
+      const prefix = indent + marker + ' ';
 
       if (sel.active.character === 0) {
         editor.edit(eb => eb.insert(new vscode.Position(lineNum, 0), prefix + '\n')).then(() => {
