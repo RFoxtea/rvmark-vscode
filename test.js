@@ -87,6 +87,22 @@ test('collectNodes: basic nodes', () => {
   assert.equal(nodes[2].ordinal, '2');
 });
 
+test('collectNodes: skips the document head', () => {
+  const doc = makeDoc([
+    '{title: x',
+    '- not: a node',
+    '}',
+    '',
+    '[T {',
+    '  a. b',
+    '}]',
+    '@o {url: y}',
+    '- a',
+    '  - b',
+  ].join('\n'));
+  assert.deepEqual(collectNodes(doc).map(n => n.lineIndex), [8, 9]);
+});
+
 test('collectNodes: skips fenced code block contents', () => {
   const doc = makeDoc([
     '1. node',

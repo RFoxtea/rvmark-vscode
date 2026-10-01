@@ -1,70 +1,21 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
+const outline = require('rvmark/edit');
+const { subtreeRange } = outline;
 
-// New syntax: <indent><ordinal>. <rest>
-// Ordinal: any alphanumeric string, or - / *
-const NODE_LINE  = /^( *)(?:([a-zA-Z0-9]+)\.|([*-]))\s+/;
-const NODE_MEDIA = /\{[^}]*(?:=\s*block|type:\s*block)\b/;
-const NODE_MEDIA_INLINE = /\{[^}]*(?:=\s*block|type:\s*block)[^}]*\}\s*\S/;
-const FENCE_OPEN = /^([ \t]*)(`{3,}|~{3,})/;
-const INT_ORDINAL = /^[1-9][0-9]*$/;
-
-// ── Indent stack depth resolution ─────────────────────────────────────────────
-function computeDepths(nodeRecords) {
-  const indentStack = [''];
-  const depths = [];
-  for (const rec of nodeRecords) {
-    const existing = indentStack.indexOf(rec.indent);
-    let depth;
-    if (existing !== -1) {
-      depth = existing + 1;
-      indentStack.length = existing + 1;
-    } else {
-      indentStack.push(rec.indent);
-      depth = indentStack.length;
-    }
-    depths.push(depth);
-  }
-  return depths;
-}
+const { NODE_LINE } = outline;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+function documentLines(document) {
+  const lines = [];
+  for (let i = 0; i < document.lineCount; i++) lines.push(document.lineAt(i).text);
+  return lines;
+}
+
 function collectNodes(document) {
-  const nodes = [];
-  let fenceChar   = null; // null = not in a fence; otherwise the fence char ('`' or '~')
-  let fenceLen    = 0;
-  let inMediaBody = false; // inside a body-type node's fenced body
-  for (let i = 0; i < document.lineCount; i++) {
-    const text = document.lineAt(i).text;
-    if (fenceChar !== null) {
-      // Inside a fence — look for the matching closing fence
-      const closeM = text.match(/^([ \t]*)(`{3,}|~{3,})\s*$/);
-      if (closeM && closeM[2][0] === fenceChar && closeM[2].length >= fenceLen) {
-        fenceChar = null; fenceLen = 0;
-        if (inMediaBody) { inMediaBody = false; }
-      }
-      continue;
-    }
-    if (inMediaBody) {
-      // Waiting for the opening fence of a body-type node
-      const openM = FENCE_OPEN.exec(text);
-      if (openM) { fenceChar = openM[2][0]; fenceLen = openM[2].length; }
-      continue;
-    }
-    // Outside any fence — check for node lines or fence opens
-    const openM = FENCE_OPEN.exec(text);
-    if (openM) { fenceChar = openM[2][0]; fenceLen = openM[2].length; continue; }
-    const m = NODE_LINE.exec(text);
-    if (m) {
-      nodes.push({ lineIndex: i, indent: m[1], ordinal: m[2] || m[3], matchLen: m[0].length });
-      if (NODE_MEDIA.test(text) && !NODE_MEDIA_INLINE.test(text)) inMediaBody = true;
-    }
-  }
-  const depths = computeDepths(nodes);
-  nodes.forEach((n, i) => { n.depth = depths[i]; });
-  return nodes;
+  return outline.collectNodes(documentLines(document));
 }
 
 // True if `lineNum` is a real node line, i.e. one collectNodes found. A bare
@@ -87,16 +38,6 @@ function detectIndentUnit(document) {
     }
   }
   return 2;
-}
-
-function subtreeRange(nodes, idx, lineCount) {
-  const start = nodes[idx].lineIndex;
-  const d = nodes[idx].depth;
-  let end = lineCount - 1;
-  for (let i = idx + 1; i < nodes.length; i++) {
-    if (nodes[i].depth <= d) { end = nodes[i].lineIndex - 1; break; }
-  }
-  return [start, end];
 }
 
 // ── Linter ────────────────────────────────────────────────────────────────────
@@ -147,20 +88,8 @@ function lintDocument(document) {
   const ANCHOR_DEF_RE = /[{;]\s*#([a-zA-Z0-9_-]+)/g;
   const REFERENCE_RE  = /\{[^}]*?(?:transclude:\s*|=>\s*)([^;}\s]+)/g;
 
-  let lintFenceChar = null;
-  let lintFenceLen  = 0;
-  for (let i = 0; i < document.lineCount; i++) {
+  for (const { lineIndex: i } of nodes) {
     const text = document.lineAt(i).text;
-    if (lintFenceChar !== null) {
-      const closeM = text.match(/^([ \t]*)(`{3,}|~{3,})\s*$/);
-      if (closeM && closeM[2][0] === lintFenceChar && closeM[2].length >= lintFenceLen) {
-        lintFenceChar = null; lintFenceLen = 0;
-      }
-      continue;
-    }
-    const openM = FENCE_OPEN.exec(text);
-    if (openM) { lintFenceChar = openM[2][0]; lintFenceLen = openM[2].length; continue; }
-    if (!NODE_LINE.test(text)) continue;
 
     ANCHOR_DEF_RE.lastIndex = 0;
     let m;
@@ -203,8 +132,9 @@ function lintDocument(document) {
         const remoteAnchors = new Set();
         const re = /[{;]\s*#([a-zA-Z0-9_-]+)/g;
         let am;
-        for (const line of fileText.split('\n')) {
-          if (!NODE_LINE.test(line)) continue;
+        const fileLines = fileText.split('\n');
+        for (const { lineIndex } of outline.collectNodes(fileLines)) {
+          const line = fileLines[lineIndex];
           re.lastIndex = 0;
           while ((am = re.exec(line)) !== null) remoteAnchors.add(am[1]);
         }
@@ -225,102 +155,18 @@ function lintDocument(document) {
 // ── Folding ───────────────────────────────────────────────────────────────────
 
 function provideFoldingRanges(document) {
-  const ranges = [];
-  const nodes = collectNodes(document);
-
-  let mediaStart  = -1;  // line index of the body-type node line
-  let fenceChar   = null;
-  let fenceLen    = 0;
-  let fenceStart  = -1;  // line index of the opening fence
-  let inMediaBody = false;
-  for (let i = 0; i < document.lineCount; i++) {
-    const text = document.lineAt(i).text;
-    if (fenceChar !== null) {
-      const closeM = text.match(/^([ \t]*)(`{3,}|~{3,})\s*$/);
-      if (closeM && closeM[2][0] === fenceChar && closeM[2].length >= fenceLen) {
-        if (inMediaBody && mediaStart !== -1) {
-          ranges.push(new vscode.FoldingRange(fenceStart, i));
-          mediaStart = -1;
-          inMediaBody = false;
-        }
-        fenceChar = null; fenceLen = 0; fenceStart = -1;
-      }
-      continue;
-    }
-    if (inMediaBody) {
-      const openM = FENCE_OPEN.exec(text);
-      if (openM) { fenceChar = openM[2][0]; fenceLen = openM[2].length; fenceStart = i; }
-      continue;
-    }
-    const openM = FENCE_OPEN.exec(text);
-    if (openM) { fenceChar = openM[2][0]; fenceLen = openM[2].length; fenceStart = i; continue; }
-    if (NODE_LINE.test(text) && NODE_MEDIA.test(text) && !NODE_MEDIA_INLINE.test(text)) {
-      mediaStart = i; inMediaBody = true;
-    }
-  }
-
-  for (let i = 0; i < nodes.length; i++) {
-    const [start, end] = subtreeRange(nodes, i, document.lineCount);
-    if (end > start) ranges.push(new vscode.FoldingRange(start, end));
-  }
-
-  return ranges;
+  return outline.foldRanges(documentLines(document))
+    .map(([start, end]) => new vscode.FoldingRange(start, end));
 }
 
 // ── continueNumbering helper ──────────────────────────────────────────────────
 
-// Returns the next integer ordinal for a new sibling inserted after `lineNum`.
-// Exported for testing.
 function nextSiblingOrdinal(doc, lineNum) {
-  const lineText = doc.lineAt(lineNum).text;
-  const m = NODE_LINE.exec(lineText);
-  if (!m) return null;
-
-  const indent = m[1];
-  const nodes = collectNodes(doc);
-  const curIdx = nodes.findIndex(n => n.lineIndex === lineNum);
-  if (curIdx === -1) return null; // inside a body: not a node line
-  const depth = nodes[curIdx].depth;
-
-  // Find parent index (same logic as linter's ancestorIdxStack).
-  const ancestorIdxStack = [];
-  for (let i = 0; i <= curIdx; i++) {
-    ancestorIdxStack.length = nodes[i].depth - 1;
-    ancestorIdxStack[nodes[i].depth - 1] = i;
-  }
-  const parentIdx = depth > 1 ? (ancestorIdxStack[depth - 2] ?? -1) : -1;
-
-  // Rebuild parentIdxOf for all nodes to find true siblings.
-  const parentIdxOf = new Array(nodes.length).fill(-1);
-  const stack2 = [];
-  for (let i = 0; i < nodes.length; i++) {
-    stack2.length = nodes[i].depth - 1;
-    parentIdxOf[i] = nodes[i].depth > 1 ? (stack2[nodes[i].depth - 2] ?? -1) : -1;
-    stack2[nodes[i].depth - 1] = i;
-  }
-
-  let maxNum = 0;
-  for (let i = 0; i < nodes.length; i++) {
-    const n = nodes[i];
-    if (parentIdxOf[i] === parentIdx && n.indent === indent && INT_ORDINAL.test(n.ordinal)) {
-      maxNum = Math.max(maxNum, parseInt(n.ordinal, 10));
-    }
-  }
-  return maxNum + 1;
+  return outline.nextSiblingOrdinal(documentLines(doc), lineNum);
 }
 
-// Returns the marker text (no trailing space) for a new sibling inserted after
-// `lineNum`, matching the current node's style. Unordered is the default: an
-// unordered marker ('-' or '*') repeats as-is, an integer ordinal continues
-// numbering, and any other explicit ordinal (e.g. 'a.', 'iv.') falls back to
-// '-'. Returns null if `lineNum` is not a node line. Exported for testing.
 function nextSiblingMarker(doc, lineNum) {
-  const m = NODE_LINE.exec(doc.lineAt(lineNum).text);
-  if (!m) return null;
-  if (!isNodeLine(doc, lineNum)) return null;
-  if (m[3]) return m[3]; // '-' or '*'
-  if (INT_ORDINAL.test(m[2])) return String(nextSiblingOrdinal(doc, lineNum) ?? 1) + '.';
-  return '-';
+  return outline.nextSiblingMarker(documentLines(doc), lineNum);
 }
 
 // ── Selection expansion ───────────────────────────────────────────────────────
@@ -330,72 +176,21 @@ function nextSiblingMarker(doc, lineNum) {
 // that line i belongs to (or -1 for lines that belong to no node — e.g. leading
 // junk before the first node, or blank lines outside a body).
 //
-// A node line owns:
-//   - its fenced body, if any (opening fence, content, closing fence), plus any
-//     blank lines between the node line and the opening fence;
-//   - the continuation lines that follow it (non-blank, non-node, outside a fence).
-//
-// Blank lines are only claimed when they sit inside a body or between the node
-// line and its opening fence; a trailing blank line after a node ends its run so
-// indenting a node doesn't drag along the whitespace separating it from the next.
+// A node line owns its fenced body (with any blank lines before the opening
+// fence) and its continuation lines, as parser.ts assigns them. Other blank
+// lines are unowned, so indenting a node doesn't drag along the whitespace
+// separating it from the next.
 function computeLineOwners(document) {
-  const ownerOf = new Array(document.lineCount).fill(-1);
-  let owner      = -1;   // current node line index
-  let fenceChar  = null;
-  let fenceLen   = 0;
-  let awaitFence = false; // node declared a body; opening fence not seen yet
-  let pendingBlanks = []; // blank lines held back until we know they're inside
-
-  for (let i = 0; i < document.lineCount; i++) {
-    const text = document.lineAt(i).text;
-
-    if (fenceChar !== null) {
-      ownerOf[i] = owner;
-      const closeM = text.match(/^([ \t]*)(`{3,}|~{3,})\s*$/);
-      if (closeM && closeM[2][0] === fenceChar && closeM[2].length >= fenceLen) {
-        fenceChar = null; fenceLen = 0;
-      }
-      continue;
-    }
-
-    if (awaitFence) {
-      if (text.trim() === '') { pendingBlanks.push(i); continue; }
-      const openM = FENCE_OPEN.exec(text);
-      if (openM) {
-        // The blanks we held back sit between the node line and its fence: claim them.
-        for (const b of pendingBlanks) ownerOf[b] = owner;
-        pendingBlanks = [];
-        fenceChar = openM[2][0]; fenceLen = openM[2].length;
-        ownerOf[i] = owner;
-        awaitFence = false;
-        continue;
-      }
-      // No body materialised after all — fall through and treat this like any
-      // other line, leaving the held-back blanks unowned.
-      pendingBlanks = [];
-      awaitFence = false;
-    }
-
-    const m = NODE_LINE.exec(text);
-    if (m) {
-      owner = i;
-      ownerOf[i] = i;
-      // A body-type node with no inline value opens a fenced body next.
-      awaitFence = NODE_MEDIA.test(text) && !NODE_MEDIA_INLINE.test(text);
-      continue;
-    }
-
-    const openM = FENCE_OPEN.exec(text);
-    if (openM) {
-      // A stray fence outside a declared body still shields its contents.
-      fenceChar = openM[2][0]; fenceLen = openM[2].length;
-      ownerOf[i] = owner;
-      continue;
-    }
-
-    if (text.trim() === '') { owner = -1; continue; } // blank line ends the run
-    ownerOf[i] = owner; // continuation line
-  }
+  const lines = documentLines(document);
+  const ownerOf = new Array(lines.length).fill(-1);
+  const nodes = outline.collectNodes(lines);
+  nodes.forEach((node, k) => {
+    const own = node.lineIndex;
+    const bodyEnd = node.body ? node.body[1] : own;
+    for (let i = own; i <= bodyEnd; i++) ownerOf[i] = own;
+    const next = k + 1 < nodes.length ? nodes[k + 1].lineIndex : lines.length;
+    for (let i = bodyEnd + 1; i < next; i++) if (lines[i].trim()) ownerOf[i] = own;
+  });
   return ownerOf;
 }
 
@@ -487,9 +282,31 @@ function renumberAfterEdit(editor, selectedLineNums) {
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
+// ── Highlighting ──────────────────────────────────────────────────────────────
+
+// The engine's token groups that VS Code has a standard semantic type for keep
+// their name; the markup groups get an `rvmark-` type declared in package.json.
+const STANDARD_TYPES = new Set(['keyword', 'operator', 'type', 'variable', 'property', 'string', 'decorator', 'namespace']);
+const SEMANTIC_TYPES = outline.TOKEN_TYPES.map(t => STANDARD_TYPES.has(t) ? t : `rvmark-${t}`);
+
+function provideDocumentSemanticTokens(document, legend) {
+  const builder = new vscode.SemanticTokensBuilder(legend);
+  outline.highlight(documentLines(document)).forEach((tokens, line) => {
+    for (const tok of tokens) {
+      builder.push(line, tok.from, tok.to - tok.from, outline.TOKEN_TYPES.indexOf(tok.type), tok.definition ? 1 : 0);
+    }
+  });
+  return builder.build();
+}
+
 function activate(context) {
   context.subscriptions.push(
     vscode.languages.registerFoldingRangeProvider({ language: 'rvmark' }, { provideFoldingRanges })
+  );
+  const legend = new vscode.SemanticTokensLegend(SEMANTIC_TYPES, ['declaration']);
+  context.subscriptions.push(
+    vscode.languages.registerDocumentSemanticTokensProvider(
+      { language: 'rvmark' }, { provideDocumentSemanticTokens: doc => provideDocumentSemanticTokens(doc, legend) }, legend)
   );
 
   // Tab: indent selected node lines one level deeper, then renumber.
@@ -624,28 +441,14 @@ function activate(context) {
   // unordered is the default — while an integer ordinal continues numbering.
   context.subscriptions.push(
     vscode.commands.registerTextEditorCommand('rvmark.continueNumbering', (editor) => {
-      const doc = editor.document;
       const sel = editor.selection;
-      const lineNum = sel.active.line;
-      const lineText = doc.lineAt(lineNum).text;
-      const m = NODE_LINE.exec(lineText);
-      const marker = m && nextSiblingMarker(doc, lineNum);
-      if (!marker) { vscode.commands.executeCommand('type', { text: '\n' }); return; }
-
-      const indent = m[1];
-      const prefix = indent + marker + ' ';
-
-      if (sel.active.character === 0) {
-        editor.edit(eb => eb.insert(new vscode.Position(lineNum, 0), prefix + '\n')).then(() => {
-          const cur = new vscode.Position(lineNum, prefix.length);
-          editor.selection = new vscode.Selection(cur, cur);
-        });
-      } else {
-        editor.edit(eb => eb.insert(sel.active, '\n' + prefix)).then(() => {
-          const cur = new vscode.Position(lineNum + 1, prefix.length);
-          editor.selection = new vscode.Selection(cur, cur);
-        });
-      }
+      const ins = outline.continueOutline(documentLines(editor.document),
+        { line: sel.active.line, col: sel.active.character });
+      if (!ins) { vscode.commands.executeCommand('type', { text: '\n' }); return; }
+      editor.edit(eb => eb.insert(new vscode.Position(ins.at.line, ins.at.col), ins.text)).then(() => {
+        const cur = new vscode.Position(ins.cursor.line, ins.cursor.col);
+        editor.selection = new vscode.Selection(cur, cur);
+      });
     })
   );
 

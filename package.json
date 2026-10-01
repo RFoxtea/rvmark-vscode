@@ -1,15 +1,17 @@
 {
   "name": "vscode-rvmark",
   "displayName": "rvmark",
-  "description": "Syntax highlighting for .rvmark files",
+  "description": "Syntax highlighting for .rv.md and .rvmark files",
   "version": "0.2.0",
   "publisher": "raf",
   "license": "AGPL-3.0-only",
   "engines": {
     "vscode": "^1.75.0"
   },
-  "main": "./extension.js",
+  "main": "./dist/extension.js",
   "scripts": {
+    "build": "esbuild extension.js --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
+    "vscode:prepublish": "npm run build",
     "test": "node test.js"
   },
   "categories": [
@@ -80,30 +82,84 @@
           "rvmark"
         ],
         "extensions": [
+          ".rv.md",
           ".rvmark"
         ],
         "configuration": "./language-configuration.json"
-      }
-    ],
-    "grammars": [
-      {
-        "language": "rvmark",
-        "scopeName": "source.rvmark",
-        "path": "./syntaxes/rvmark.tmLanguage.json",
-        "embeddedLanguages": {
-          "meta.embedded.block.markdown": "markdown"
-        }
       }
     ],
     "configurationDefaults": {
       "[rvmark]": {
         "editor.detectIndentation": false,
         "editor.insertSpaces": true,
-        "editor.tabSize": 2
+        "editor.tabSize": 2,
+        "editor.semanticHighlighting.enabled": true
       }
-    }
+    },
+    "semanticTokenTypes": [
+      {
+        "id": "rvmark-bullet",
+        "description": "rvmark bullet"
+      },
+      {
+        "id": "rvmark-punctuation",
+        "description": "rvmark punctuation"
+      },
+      {
+        "id": "rvmark-escape",
+        "description": "rvmark escape"
+      },
+      {
+        "id": "rvmark-link",
+        "description": "rvmark link"
+      },
+      {
+        "id": "rvmark-code",
+        "description": "rvmark code"
+      },
+      {
+        "id": "rvmark-strong",
+        "description": "rvmark strong"
+      },
+      {
+        "id": "rvmark-emphasis",
+        "description": "rvmark emphasis"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "rvmark",
+        "scopes": {
+          "rvmark-bullet": [
+            "punctuation.definition.list.begin.markdown"
+          ],
+          "rvmark-punctuation": [
+            "punctuation"
+          ],
+          "rvmark-escape": [
+            "constant.character.escape"
+          ],
+          "rvmark-link": [
+            "markup.underline.link"
+          ],
+          "rvmark-code": [
+            "markup.inline.raw"
+          ],
+          "rvmark-strong": [
+            "markup.bold"
+          ],
+          "rvmark-emphasis": [
+            "markup.italic"
+          ]
+        }
+      }
+    ]
+  },
+  "dependencies": {
+    "rvmark": "file:../rvmark-engine"
   },
   "devDependencies": {
-    "@vscode/vsce": "^2.32.0"
+    "@vscode/vsce": "^2.32.0",
+    "esbuild": "^0.28.2"
   }
 }
