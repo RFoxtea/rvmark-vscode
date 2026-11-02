@@ -117,7 +117,9 @@ function lintDocument(document) {
       const [filePart, anchor] = target.split('#');
       const candidates = [
         path.resolve(docDir, filePart),
+        path.resolve(docDir, filePart + '.rv.md'),
         path.resolve(docDir, filePart + '.rvmark'),
+        path.resolve(docDir, filePart, 'index.rv.md'),
         path.resolve(docDir, filePart, 'index.rvmark'),
       ];
       const resolvedPath = candidates.find(p => { try { return fs.statSync(p).isFile(); } catch { return false; } });
